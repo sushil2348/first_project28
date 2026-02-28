@@ -82,4 +82,3 @@ resource "aws_instance" "demo" {
     Env   = "sandbox"
   }
 }
-
