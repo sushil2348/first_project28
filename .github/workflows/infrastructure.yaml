@@ -9,7 +9,6 @@ on:
     paths: ["infra/**"]
 
 permissions:
-  id-token: write   # for AWS OIDC
   contents: read
 
 jobs:
@@ -20,8 +19,53 @@ jobs:
       run:
         working-directory: infra
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      # ✅ Only configure AWS credentials when secrets are available and PR is NOT from a fork
+      - name: Configure AWS credentials (static keys)
+        if: secrets.AWS_ACCESS_KEY_ID != '' && github.event.pull_request.head.repo.fork == false
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      # Optional sanity check (runs only if creds configured)
+      - name: Who am I?
+        if: secrets.AWS_ACCESS_KEY_ID != '' && github.event.pull_request.head.repo.fork == false
+        run: aws sts get-caller-identity
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+
+      - name: Terraform Init
+        # For forked PRs (no creds), initialize without backend or remote calls just to validate syntax
+        run: |
+          if [ "${{ github.event.pull_request.head.repo.fork }}" = "true" ] || [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ]; then
+            echo "Fork PR or no secrets: init without backend to allow validate."
+            terraform init -backend=false
+          else
+            terraform init
+          fi
+
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        # Run full plan only when credentials were configured
+        if: secrets.AWS_ACCESS_KEY_ID != '' && github.event.pull_request.head.repo.fork == false
+        run: terraform plan -no-color
+
+  apply:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/main')
+    runs-on: ubuntu-latest
+    environment: prod   # optional: require approvals in Environments
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Configure AWS credentials (static keys)
         uses: aws-actions/configure-aws-credentials@v4
@@ -30,57 +74,17 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      - name: Who am I?
+        run: aws sts get-caller-identity
+
+      - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.7.5
 
       - name: Terraform Init
         run: terraform init
 
-      - name: Terraform Validate
-        run: terraform validate
-
-      - name: Terraform Plan
-        id: plan
-        run: terraform plan -no-color
-
-      - name: Add plan to job summary
-        run: |
-          {
-            echo "## Terraform Plan"
-            echo ""
-            echo '```'
-            echo "${{ steps.plan.outputs.stdout || '' }}"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  apply:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/main')
-    runs-on: ubuntu-latest
-    environment: prod   # optional: add environment approval to gate apply
-    defaults:
-      run:
-        working-directory: infra
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
-          aws-region: ap-south-1
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.7.5
-
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Plan (for record)
+      - name: Terraform Plan (for apply)
         run: terraform plan -out=tfplan
 
       - name: Terraform Apply
