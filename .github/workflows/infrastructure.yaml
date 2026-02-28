@@ -13,57 +13,59 @@ permissions:
 
 jobs:
   plan:
-    if: github.event_name == 'pull_request'
+    if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: infra
+
     steps:
       - uses: actions/checkout@v4
 
-      # ✅ Only configure AWS credentials when secrets are available and PR is NOT from a fork
+      # Configure AWS creds only when secrets are available and PR is NOT from a fork
       - name: Configure AWS credentials (static keys)
-        if: secrets.AWS_ACCESS_KEY_ID != '' && github.event.pull_request.head.repo.fork == false
+        if: ${{ !github.event.pull_request.head.repo.fork && secrets.AWS_ACCESS_KEY_ID != '' }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
 
-      # Optional sanity check (runs only if creds configured)
+      # Optional sanity check (only runs if creds configured)
       - name: Who am I?
-        if: secrets.AWS_ACCESS_KEY_ID != '' && github.event.pull_request.head.repo.fork == false
+        if: ${{ !github.event.pull_request.head.repo.fork && secrets.AWS_ACCESS_KEY_ID != '' }}
         run: aws sts get-caller-identity
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.7.5
 
+      # Init for fork PRs or when secrets are missing: no backend/remote calls
+      - name: Terraform Init (no backend for forks/no creds)
+        if: ${{ github.event.pull_request.head.repo.fork || secrets.AWS_ACCESS_KEY_ID == '' }}
+        run: terraform init -backend=false
+
+      # Normal init when creds are available
       - name: Terraform Init
-        # For forked PRs (no creds), initialize without backend or remote calls just to validate syntax
-        run: |
-          if [ "${{ github.event.pull_request.head.repo.fork }}" = "true" ] || [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ]; then
-            echo "Fork PR or no secrets: init without backend to allow validate."
-            terraform init -backend=false
-          else
-            terraform init
-          fi
+        if: ${{ !github.event.pull_request.head.repo.fork && secrets.AWS_ACCESS_KEY_ID != '' }}
+        run: terraform init
 
       - name: Terraform Validate
         run: terraform validate
 
+      # Full plan only when creds are available (internal PRs)
       - name: Terraform Plan
-        # Run full plan only when credentials were configured
-        if: secrets.AWS_ACCESS_KEY_ID != '' && github.event.pull_request.head.repo.fork == false
+        if: ${{ !github.event.pull_request.head.repo.fork && secrets.AWS_ACCESS_KEY_ID != '' }}
         run: terraform plan -no-color
 
   apply:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/main')
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/main') }}
     runs-on: ubuntu-latest
-    environment: prod   # optional: require approvals in Environments
+    environment: prod   # optional: add Environment approval in GitHub UI
     defaults:
       run:
         working-directory: infra
+
     steps:
       - uses: actions/checkout@v4
 
