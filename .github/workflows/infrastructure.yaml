@@ -22,46 +22,54 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Configure AWS creds only when secrets are available and PR is NOT from a fork
+      # For PRs from forks: no creds, no remote calls
+      - name: Terraform Init (fork PR: no backend)
+        if: ${{ github.event.pull_request.head.repo.fork }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.5
+      - name: Init (backend=false)
+        if: ${{ github.event.pull_request.head.repo.fork }}
+        run: terraform init -backend=false
+      - name: Validate (fork-safe)
+        if: ${{ github.event.pull_request.head.repo.fork }}
+        run: terraform validate
+
+      # For PRs from same repo: configure creds and do a real plan
       - name: Configure AWS credentials (static keys)
-        if: ${{ !github.event.pull_request.head.repo.fork && secrets.AWS_ACCESS_KEY_ID != '' }}
+        if: ${{ !github.event.pull_request.head.repo.fork }}
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ap-south-1
 
-      # Optional sanity check (only runs if creds configured)
       - name: Who am I?
-        if: ${{ !github.event.pull_request.head.repo.fork && secrets.AWS_ACCESS_KEY_ID != '' }}
+        if: ${{ !github.event.pull_request.head.repo.fork }}
         run: aws sts get-caller-identity
 
-      - uses: hashicorp/setup-terraform@v3
+      - name: Setup Terraform
+        if: ${{ !github.event.pull_request.head.repo.fork }}
+        uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.7.5
 
-      # Init for fork PRs or when secrets are missing: no backend/remote calls
-      - name: Terraform Init (no backend for forks/no creds)
-        if: ${{ github.event.pull_request.head.repo.fork || secrets.AWS_ACCESS_KEY_ID == '' }}
-        run: terraform init -backend=false
-
-      # Normal init when creds are available
       - name: Terraform Init
-        if: ${{ !github.event.pull_request.head.repo.fork && secrets.AWS_ACCESS_KEY_ID != '' }}
+        if: ${{ !github.event.pull_request.head.repo.fork }}
         run: terraform init
 
       - name: Terraform Validate
+        if: ${{ !github.event.pull_request.head.repo.fork }}
         run: terraform validate
 
-      # Full plan only when creds are available (internal PRs)
       - name: Terraform Plan
-        if: ${{ !github.event.pull_request.head.repo.fork && secrets.AWS_ACCESS_KEY_ID != '' }}
+        if: ${{ !github.event.pull_request.head.repo.fork }}
         run: terraform plan -no-color
 
   apply:
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/main') }}
     runs-on: ubuntu-latest
-    environment: prod   # optional: add Environment approval in GitHub UI
+    environment: prod   # optional: add environment approvals in GitHub UI
     defaults:
       run:
         working-directory: infra
